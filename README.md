@@ -10,9 +10,9 @@ This wraps the real `nmap` binary. It does not reimplement scanning.
 curl -fsSL https://raw.githubusercontent.com/kensmith77/Nexus-Map/main/install.sh | sh
 ```
 
-That installs the `nexus-map` binary into `~/.cargo/bin` (installs a Rust toolchain via rustup if needed).
+That installs the `nexus-map` binary into `~/.cargo/bin`. The script installs a C compiler (`build-essential` / `gcc`) and a Rust toolchain if they are missing. You may be prompted for `sudo`.
 
-From a clone:
+From a clone (needs `cc`, e.g. `sudo apt-get install build-essential pkg-config`):
 
 ```sh
 cargo install --path . --locked

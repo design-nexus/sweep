@@ -2,6 +2,8 @@
 
 Dracula-themed terminal frontend for [Nmap](https://nmap.org). Build scans with Zenmap-style profiles and every major option group, watch live output, browse hosts/ports/scripts, and keep history on disk.
 
+![Nexus-Map results view](docs/screenshot.png)
+
 This wraps the real `nmap` binary. It does not reimplement scanning.
 
 ## Install

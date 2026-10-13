@@ -1,13 +1,13 @@
 #!/bin/sh
-# Nexus-Map installer.
+# sweep installer.
 # One-liner:
-#   curl -fsSL https://raw.githubusercontent.com/kensmith77/Nexus-Map/main/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/design-nexus/sweep/main/install.sh | sh
 set -eu
 
-REPO="${NEXUS_MAP_REPO:-https://github.com/kensmith77/Nexus-Map}"
-BIN_NAME="nexus-map"
+REPO="${NEXUS_MAP_REPO:-https://github.com/design-nexus/sweep}"
+BIN_NAME="sweep"
 NEED_RUST_MAJOR=1
-NEED_RUST_MINOR=85
+NEED_RUST_MINOR=88
 
 say() { printf '%s\n' "$*"; }
 err() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -122,12 +122,12 @@ ensure_build_deps() {
   fi
   curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable
   ensure_path_cargo
-  rustc_ok || err "rustc $NEED_RUST_MAJOR.$NEED_RUST_MINOR+ is required (edition 2024)"
+  rustc_ok || err "rustc $NEED_RUST_MAJOR.$NEED_RUST_MINOR+ is required (Ratatui 0.30.2)"
   have cargo || err "cargo not found after rustup install"
 }
 
 install_from_git() {
-  say "Building Nexus-Map from $REPO (this compiles nmap's TUI; first run takes a few minutes)…"
+  say "Building sweep from $REPO (this compiles nmap's TUI; first run takes a few minutes)…"
   cargo install --git "$REPO" --locked --force "$BIN_NAME"
 }
 
@@ -136,7 +136,7 @@ warn_nmap() {
     say "nmap: $(nmap -V 2>/dev/null | head -n1)"
   else
     say ""
-    say "note: nmap is not on PATH. Nexus-Map can open XML without it."
+    say "note: nmap is not on PATH. sweep can open XML without it."
     say "      scanning needs nmap, e.g.  sudo apt install nmap"
   fi
 }

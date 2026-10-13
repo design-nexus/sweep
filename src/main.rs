@@ -1,4 +1,7 @@
 mod app;
+#[cfg(test)]
+mod audit;
+mod commands;
 mod export;
 mod fields;
 mod input;
@@ -16,9 +19,10 @@ use std::time::Duration;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "nexus-map",
-    about = "Nexus-Map — Dracula-themed TUI frontend for Nmap",
-    after_help = "Pass nmap arguments after -- to load them into the builder:\n  nexus-map -- nmap -sV scanme.nmap.org"
+    name = "sweep",
+    version,
+    about = "sweep — Aurora TUI frontend for Nmap",
+    after_help = "Pass nmap arguments after -- to load them into the builder:\n  sweep -- nmap -sV scanme.nmap.org"
 )]
 struct Cli {
     /// Open an nmap XML file

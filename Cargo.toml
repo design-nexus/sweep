@@ -1,20 +1,23 @@
 [package]
-name = "nexus-map"
+name = "sweep"
 version = "0.1.0"
+rust-version = "1.88"
 edition = "2024"
-description = "Nexus-Map — Dracula-themed TUI frontend for Nmap"
+description = "sweep — Aurora TUI frontend for Nmap"
 license = "MIT"
-repository = "https://github.com/kensmith77/Nexus-Map"
-homepage = "https://github.com/kensmith77/Nexus-Map"
+repository = "https://github.com/design-nexus/sweep"
+homepage = "https://github.com/design-nexus/sweep"
 readme = "README.md"
 keywords = ["nmap", "tui", "security", "scanner"]
 categories = ["command-line-utilities"]
 
 [[bin]]
-name = "nexus-map"
+name = "sweep"
 path = "src/main.rs"
 
 [dependencies]
+unicode-width = "0.2"
+notify = "8"
 anyhow = "1.0.104"
 arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 chrono = { version = "0.4.45", features = ["clock", "serde"] }
@@ -24,7 +27,7 @@ dirs = "7.0.0"
 futures = "0.3.34"
 libc = "0.2.189"
 quick-xml = "0.42.0"
-ratatui = "0.30.2"
+ratatui = { version = "=0.30.2", features = ["crossterm_0_29"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1.53.1", features = ["full"] }
@@ -32,4 +35,5 @@ toml = "1.1.5"
 uuid = { version = "1.26.0", features = ["v4"] }
 
 [dev-dependencies]
+tempfile = "3"
 pretty_assertions = "1"

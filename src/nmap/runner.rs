@@ -181,7 +181,7 @@ mod tests {
 
     #[tokio::test]
     async fn mock_binary_produces_host() {
-        let tmp = std::env::temp_dir().join(format!("nexus-map-test-{}", Uuid::new_v4()));
+        let tmp = std::env::temp_dir().join(format!("sweep-test-{}", Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         let fake = tmp.join("nmap");
         std::fs::write(
@@ -235,6 +235,16 @@ echo "Nmap done: 1 IP address (1 host up) scanned in 0.10 seconds"
                 }
             }
         }
+        // Child exit can arrive before the pipe-reader tasks deliver their final lines.
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while let Some(event) = rx.recv().await {
+                if let ScanEvent::Stdout(line) | ScanEvent::Stderr(line) = event {
+                    lines.push(line);
+                }
+            }
+        })
+        .await
+        .expect("reader tasks close after the mock child exits");
         let xml = std::fs::read_to_string(&live.xml_path).unwrap();
         let doc = parse_partial(&xml);
         assert_eq!(doc.hosts.len(), 1);

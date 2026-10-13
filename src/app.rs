@@ -98,6 +98,7 @@ pub enum Modal {
 }
 
 pub struct App {
+    pub commands: crate::commands::Palette,
     pub tab: Tab,
     pub spec: ScanSpec,
     pub profile_idx: usize,
@@ -135,19 +136,31 @@ pub struct App {
 }
 
 impl App {
+    fn apply_aurora_theme(&mut self, id: &str) {
+        if let Err(err) = crate::theme::save(&self.paths.config.join("config.toml"), id) {
+            self.status = format!("Saving theme: {err}");
+        }
+        crate::theme::set(id);
+    }
+
     pub fn new() -> anyhow::Result<Self> {
+        Self::with_paths(Paths::resolve()?)
+    }
+
+    pub fn with_paths(paths: Paths) -> anyhow::Result<Self> {
         let nmap = detect::detect();
-        let paths = Paths::resolve()?;
         let history = persist::load_history(&paths.history);
+        crate::theme::load(&paths.config.join("config.toml"));
         let status = if nmap.present() {
             format!("{} · XML viewer + scanner ready", nmap.version_short())
         } else {
             "nmap not on PATH — XML viewing works; install nmap to scan".into()
         };
         let mut app = Self {
+            commands: crate::commands::Palette::default(),
             tab: Tab::Scan,
             spec: ScanSpec::default(),
-            profile_idx: 8, // Regular scan
+            profile_idx: 5, // Quick scan
             profile_dirty: false,
             nmap,
             paths,
@@ -160,7 +173,7 @@ impl App {
             status,
             modal: Modal::None,
             edit: LineEdit::default(),
-            scan_pane: ScanPane::Targets,
+            scan_pane: ScanPane::Profiles,
             option_idx: fields::first_selectable(),
             host_idx: 0,
             port_idx: 0,
@@ -246,6 +259,24 @@ impl App {
         }
         if !matches!(self.modal, Modal::None) {
             self.handle_modal_key(key);
+            return;
+        }
+
+        if self.commands.open
+            || (key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL))
+        {
+            if let Some(action) = self.commands.handle(key, ACTIONS) {
+                if action.modifiers == KeyModifiers::ALT {
+                    let id = match action.key {
+                        KeyCode::Char('o') => "omarchy",
+                        KeyCode::Char('t') => "terminal",
+                        _ => "aurora",
+                    };
+                    self.apply_aurora_theme(id);
+                } else {
+                    self.handle_key(action.event());
+                }
+            }
             return;
         }
         match key.code {
@@ -906,6 +937,7 @@ impl App {
     }
 
     pub async fn on_tick(&mut self) {
+        crate::theme::refresh();
         self.drain_scan_events();
         if let Some(p) = self.pending_start.take() {
             self.launch(p).await;
@@ -1054,3 +1086,19 @@ pub struct PendingStart {
     pub spec: ScanSpec,
     pub escalate: bool,
 }
+
+pub const ACTIONS: &[crate::commands::Action] = &[
+    crate::commands::Action::key("Scan builder", '1'),
+    crate::commands::Action::key("Live scan", '2'),
+    crate::commands::Action::key("Results", '3'),
+    crate::commands::Action::key("History", '4'),
+    crate::commands::Action::key("Scripts", '5'),
+    crate::commands::Action::key("Compare", '6'),
+    crate::commands::Action::ctrl("Review and run scan", 'g'),
+    crate::commands::Action::key("Copy command", 'y'),
+    crate::commands::Action::key("Filter", '/'),
+    crate::commands::Action::key("Help", '?'),
+    crate::commands::Action::theme("Aurora theme", 'a'),
+    crate::commands::Action::theme("Follow Omarchy theme", 'o'),
+    crate::commands::Action::theme("Terminal theme", 't'),
+];

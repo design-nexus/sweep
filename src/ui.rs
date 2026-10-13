@@ -14,11 +14,18 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let area = frame.area();
     frame.render_widget(Block::default().style(theme::bg()), area);
 
+    if area.width < 30 || area.height < 10 {
+        frame.render_widget(
+            Paragraph::new("sweep · needs 30×10\nResize terminal; q quits"),
+            area,
+        );
+        return;
+    }
     let chunks = Layout::vertical([
         Constraint::Length(3),
         Constraint::Min(8),
+        Constraint::Length(if area.width < 100 { 5 } else { 4 }),
         Constraint::Length(2),
-        Constraint::Length(1),
     ])
     .split(area);
 
@@ -92,39 +99,66 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         Modal::Message { title, body } => draw_confirm(frame, area, title, body),
     }
+    app.commands.draw(
+        frame,
+        crate::app::ACTIONS,
+        theme::bg_color(),
+        theme::fg(),
+        theme::purple(),
+        theme::current(),
+    );
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
-    let titles: Vec<Line> = Tab::all()
-        .into_iter()
-        .map(|t| Line::from(Span::styled(format!(" {} ", t.title()), theme::muted())))
+    let [identity, tabs] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(2)]).areas(area);
+    let state = if app.live.as_ref().is_some_and(|l| l.running()) {
+        "● running"
+    } else if app.nmap.present() {
+        "● ready"
+    } else {
+        "○ nmap offline"
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(" sweep", theme::title()),
+            Span::styled("  Network discovery / Nmap  ", theme::muted()),
+            Span::styled(state, theme::ok()),
+        ])),
+        identity,
+    );
+    let all = Tab::all();
+    let selected = all.iter().position(|t| *t == app.tab).unwrap_or(0);
+    let start = if area.width < 80 {
+        selected.saturating_sub(1)
+    } else {
+        0
+    };
+    let count = if area.width < 80 { 4 } else { 6 };
+    let titles: Vec<Line> = all
+        .iter()
+        .skip(start)
+        .take(count)
+        .map(|t| Line::from(t.title()))
         .collect();
-    let selected = Tab::all().iter().position(|t| *t == app.tab).unwrap_or(0);
-    let nmap = app.nmap.version_short();
-    let root = if app.nmap.euid_root { "root" } else { "user" };
-    let tabs = Tabs::new(titles)
-        .select(selected)
-        .highlight_style(theme::accent())
-        .block(
-            Block::bordered()
-                .border_style(Style::default().fg(theme::COMMENT))
-                .title(Span::styled(
-                    format!(" Nexus-Map  {nmap}  {root}  Dracula "),
-                    theme::title(),
-                )),
-        );
-    frame.render_widget(tabs, area);
+    frame.render_widget(
+        Tabs::new(titles)
+            .select(selected - start)
+            .highlight_style(theme::accent())
+            .divider("  "),
+        tabs,
+    );
 }
 
 fn draw_command(frame: &mut Frame, app: &App, area: Rect) {
     let cmd = app.spec.preview_command();
     let p = Paragraph::new(Line::from(vec![
         Span::styled(" ", Style::default()),
-        Span::styled(cmd, theme::flag()),
+        Span::styled(cmd, theme::ip()),
     ]))
     .block(
         Block::bordered()
-            .border_style(Style::default().fg(theme::COMMENT))
+            .border_style(Style::default().fg(theme::comment()))
             .title(Span::styled(" command ", theme::muted())),
     )
     .wrap(Wrap { trim: true });
@@ -132,6 +166,18 @@ fn draw_command(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
+    let [keys, status] =
+        Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
+    frame.render_widget(
+        Paragraph::new(if app.tab == Tab::Scan {
+            " ^G review/run  Tab pane  ^K actions  q quit"
+        } else {
+            " Tab pane  / filter  ^K actions  q quit"
+        })
+        .style(theme::muted()),
+        keys,
+    );
+    let area = status;
     let running = app.live.as_ref().is_some_and(|l| l.running());
     let state = if running {
         Span::styled(" RUNNING ", theme::warn().add_modifier(Modifier::BOLD))
@@ -148,7 +194,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         Span::styled(format!(" {} ", app.status), theme::muted()),
         root,
         Span::styled(
-            "  ? help  ^G run  y yank  ^C cancel  q quit",
+            "  ^G review/run  Tab pane  ^K actions  q quit",
             theme::muted(),
         ),
     ]);
@@ -156,12 +202,22 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_scan(frame: &mut Frame, app: &App, area: Rect) {
-    let cols = Layout::horizontal([
-        Constraint::Length(32),
-        Constraint::Length(28),
-        Constraint::Min(40),
-    ])
-    .split(area);
+    let cols = if area.width < 70 {
+        match app.scan_pane {
+            ScanPane::Profiles => [area, Rect::default(), Rect::default()],
+            ScanPane::Targets => [Rect::default(), area, Rect::default()],
+            ScanPane::Options => [Rect::default(), Rect::default(), area],
+        }
+    } else {
+        let [profiles, content] = Layout::horizontal([
+            Constraint::Length(if area.width >= 100 { 30 } else { 25 }),
+            Constraint::Min(1),
+        ])
+        .areas(area);
+        let [targets, options] =
+            Layout::vertical([Constraint::Length(6), Constraint::Min(1)]).areas(content);
+        [profiles, targets, options]
+    };
 
     let mut prof_lines = Vec::new();
     for (i, p) in builtin_profiles().iter().enumerate() {
@@ -180,7 +236,12 @@ fn draw_scan(frame: &mut Frame, app: &App, area: Rect) {
     prof_lines.push(Line::from(""));
     prof_lines.push(Line::from(Span::styled(desc, theme::muted())));
     frame.render_widget(
-        Paragraph::new(prof_lines).block(pane(" profiles ", app.scan_pane == ScanPane::Profiles)),
+        Paragraph::new(prof_lines)
+            .scroll((
+                window_start(app.profile_idx, cols[0].height.saturating_sub(4) as usize) as u16,
+                0,
+            ))
+            .block(pane(" profiles ", app.scan_pane == ScanPane::Profiles)),
         cols[0],
     );
 
@@ -216,6 +277,58 @@ fn draw_scan(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_options(frame: &mut Frame, app: &App, area: Rect) {
+    if app.scan_pane != ScanPane::Options {
+        let spec = &app.spec;
+        let ports = if spec.fast_ports {
+            "Top 100".into()
+        } else if let Some(top) = spec.top_ports {
+            format!("Top {top}")
+        } else {
+            spec.ports.clone().unwrap_or_else(|| "Default ports".into())
+        };
+        let timing = spec
+            .timing
+            .map(|t| format!("T{t}"))
+            .unwrap_or_else(|| "Default".into());
+        let toggle = |enabled| if enabled { "on" } else { "off" };
+        let privileges = if spec.needs_root() {
+            "root required"
+        } else {
+            "no root required"
+        };
+        let rows = [
+            ("Port selection", ports),
+            ("Timing", timing),
+            ("Service detection", toggle(spec.version_detection).into()),
+            ("OS detection", toggle(spec.os_detection).into()),
+            ("Privileges", privileges.into()),
+        ];
+        let mut lines: Vec<Line> = rows
+            .into_iter()
+            .map(|(label, value)| {
+                Line::from(vec![
+                    Span::styled(format!("{label:<20}"), theme::muted()),
+                    Span::styled(value, theme::ip()),
+                ])
+            })
+            .collect();
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "Tab to options to edit all scan settings.",
+            theme::muted(),
+        )));
+        lines.push(Line::from(Span::styled(
+            "Review the generated command before launching.",
+            theme::muted(),
+        )));
+        frame.render_widget(
+            Paragraph::new(lines)
+                .wrap(Wrap { trim: false })
+                .block(pane(" Scan options ", false)),
+            area,
+        );
+        return;
+    }
     let inner_h = area.height.saturating_sub(2) as usize;
     let sel = app.option_idx;
     let start = if sel >= inner_h { sel + 1 - inner_h } else { 0 };
@@ -279,10 +392,10 @@ fn draw_live(frame: &mut Frame, app: &App, area: Rect) {
     let gauge = Gauge::default()
         .block(
             Block::bordered()
-                .border_style(Style::default().fg(theme::COMMENT))
+                .border_style(Style::default().fg(theme::comment()))
                 .title(" progress "),
         )
-        .gauge_style(Style::default().fg(theme::PINK).bg(theme::CURRENT))
+        .gauge_style(Style::default().fg(theme::pink()).bg(theme::current()))
         .ratio(ratio)
         .label(label);
     frame.render_widget(gauge, rows[0]);
@@ -330,7 +443,7 @@ fn colorize_log(s: &str) -> Line<'static> {
     } else if s.contains("Stats:") || s.contains("Timing:") {
         theme::script()
     } else {
-        Style::default().fg(theme::FG)
+        Style::default().fg(theme::fg())
     };
     Line::from(Span::styled(s.to_string(), style))
 }
@@ -702,7 +815,7 @@ fn draw_help(frame: &mut Frame, area: Rect, scroll: u16) {
             .block(
                 Block::bordered()
                     .title(Span::styled(" help ", theme::title()))
-                    .border_style(Style::default().fg(theme::PURPLE)),
+                    .border_style(Style::default().fg(theme::purple())),
             ),
         popup,
     );
@@ -719,7 +832,7 @@ fn draw_confirm(frame: &mut Frame, area: Rect, title: &str, body: &str) {
             .block(
                 Block::bordered()
                     .title(Span::styled(format!(" {title} "), theme::title()))
-                    .border_style(Style::default().fg(theme::PINK)),
+                    .border_style(Style::default().fg(theme::pink())),
             ),
         popup,
     );
@@ -735,13 +848,19 @@ fn draw_prompt(frame: &mut Frame, area: Rect, title: &str, value: &str, cursor: 
         .map(|(i, _)| i)
         .unwrap_or(value.len());
     shown.insert(byte, '▌');
+    let cursor_column = unicode_width::UnicodeWidthStr::width(&shown[..byte]);
+    let offset = cursor_column
+        .saturating_sub(popup.width.saturating_sub(4) as usize)
+        .min(u16::MAX as usize) as u16;
+
     frame.render_widget(
         Paragraph::new(shown)
-            .style(theme::bg().fg(theme::YELLOW))
+            .scroll((0, offset))
+            .style(theme::bg().fg(theme::yellow()))
             .block(
                 Block::bordered()
                     .title(Span::styled(format!(" {title} "), theme::title()))
-                    .border_style(Style::default().fg(theme::CYAN)),
+                    .border_style(Style::default().fg(theme::cyan())),
             ),
         popup,
     );
@@ -757,7 +876,11 @@ fn pane(title: &str, active: bool) -> Block<'_> {
                 theme::muted()
             },
         ))
-        .border_style(Style::default().fg(if active { theme::PINK } else { theme::COMMENT }))
+        .border_style(Style::default().fg(if active {
+            theme::pink()
+        } else {
+            theme::comment()
+        }))
 }
 
 fn centered(area: Rect, w: u16, h: u16) -> Rect {
@@ -780,15 +903,28 @@ fn window_start(sel: usize, height: usize) -> usize {
 }
 
 fn truncate(s: &str, n: usize) -> String {
-    if s.chars().count() <= n {
-        s.to_string()
-    } else {
-        let t: String = s.chars().take(n.saturating_sub(1)).collect();
-        format!("{t}…")
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if s.width() <= n {
+        return s.to_owned();
     }
+    if n == 0 {
+        return String::new();
+    }
+    let mut text = String::new();
+    let mut width = 0;
+    for c in s.chars() {
+        let next = c.width().unwrap_or(0);
+        if width + next > n - 1 {
+            break;
+        }
+        text.push(c);
+        width += next;
+    }
+    text.push('…');
+    text
 }
 
-const HELP: &str = r#"Nexus-Map — Dracula-themed Nmap frontend
+const HELP: &str = r#"Sweep — Aurora Nmap frontend
 
 Tabs          1 Scan  2 Live  3 Results  4 History  5 Scripts  6 Compare
 Tab/S-Tab     cycle panes          ? this help          q quit
@@ -814,7 +950,7 @@ Scripts
 
 Root
   SYN/UDP/OS/-A need privileges. If you are not root, sudo -n nmap is tried.
-  Run `sudo -v` first, or start Nexus-Map via sudo.
+  Run `sudo -v` first, or start sweep via sudo.
 
 Only scan networks you own or have permission to test."#;
 
@@ -839,6 +975,117 @@ mod tests {
             let backend = ratatui::backend::TestBackend::new(w, h);
             let mut term = ratatui::Terminal::new(backend).unwrap();
             term.draw(|f| draw(f, &app)).unwrap();
+        }
+    }
+}
+
+#[cfg(test)]
+mod aurora_audit {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend};
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+    fn commands() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL)
+    }
+    fn fixture(dir: &std::path::Path) -> App {
+        let paths = crate::persist::Paths {
+            data: dir.into(),
+            config: dir.into(),
+            scans: dir.join("scans"),
+            history: dir.join("history.toml"),
+        };
+        let mut app = App::with_paths(paths).unwrap();
+        app.apply_cli(
+            Some("192.168.1.0/24".into()),
+            Some("Quick scan".into()),
+            None,
+            vec![],
+        )
+        .unwrap();
+        app.scan_pane = ScanPane::Profiles;
+        app
+    }
+    #[test]
+    fn scan_preview_is_visible_and_edit_owns_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = fixture(dir.path());
+        let mut term = Terminal::new(TestBackend::new(60, 20)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let text = crate::audit::text(term.backend().buffer());
+        assert!(text.contains(&app.spec.preview_command()), "{text}");
+        app.scan_pane = ScanPane::Targets;
+        app.handle_key(key(KeyCode::Enter));
+        assert!(matches!(app.modal, Modal::Edit { .. }));
+        app.handle_key(commands());
+        assert!(!app.commands.open);
+        assert!(app.pending_start.is_none());
+    }
+    #[test]
+    fn responsive_render_matrix() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = fixture(dir.path());
+        // One terminal exercises shrink/grow transitions, rather than independent initial frames.
+        let mut resizing = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        for &(w, h) in &[
+            (120, 40),
+            (60, 20),
+            (80, 24),
+            (30, 10),
+            (100, 30),
+            (120, 40),
+        ] {
+            resizing.backend_mut().resize(w, h);
+            resizing.draw(|f| draw(f, &app)).unwrap();
+            assert_eq!(resizing.backend().buffer().area.width, w);
+        }
+        for &(w, h) in crate::audit::SIZES {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| draw(f, &app)).unwrap();
+            let buffer = term.backend().buffer();
+            if w >= 30 && h >= 10 {
+                assert!(crate::audit::text(buffer).contains("sweep"));
+            }
+            crate::audit::capture("sweep", "main", buffer);
+        }
+        app.scan_pane = ScanPane::Options;
+        for &(w, h) in &crate::audit::SIZES[..4] {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| draw(f, &app)).unwrap();
+            crate::audit::capture("sweep", "focused", term.backend().buffer());
+        }
+        app.handle_key(commands());
+        for &(w, h) in &crate::audit::SIZES[..4] {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| draw(f, &app)).unwrap();
+            let buffer = term.backend().buffer();
+            assert!(crate::audit::text(buffer).contains("Actions"));
+            crate::audit::capture("sweep", "actions", buffer);
+        }
+        app.commands.open = false;
+        app.spec.targets.clear();
+        app.results = Default::default();
+        for tab in Tab::all() {
+            app.tab = tab;
+            for &(w, h) in &crate::audit::SIZES[..4] {
+                let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+                term.draw(|f| draw(f, &app)).unwrap();
+                crate::audit::capture("sweep", "offline", term.backend().buffer());
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod unicode_regressions {
+    use super::*;
+    #[test]
+    fn labels_fit_display_columns() {
+        use unicode_width::UnicodeWidthStr;
+        for width in 0..10 {
+            assert!(truncate("你好 🦀 cafe\u{301}", width).width() <= width);
         }
     }
 }

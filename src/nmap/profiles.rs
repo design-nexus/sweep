@@ -10,9 +10,29 @@ pub struct Profile {
 pub fn builtin_profiles() -> &'static [Profile] {
     &[
         Profile {
+            name: "Quick scan",
+            command: "nmap -T4 -F",
+            description: "Aggressive timing, top 100 ports.",
+        },
+        Profile {
+            name: "Quick scan plus",
+            command: "nmap -sV -T4 -O -F --version-light",
+            description: "Quick scan plus OS and light version detection.",
+        },
+        Profile {
             name: "Intense scan",
             command: "nmap -T4 -A -v",
             description: "OS detection, version detection, script scan, and traceroute.",
+        },
+        Profile {
+            name: "Ping scan",
+            command: "nmap -sn",
+            description: "Discover which targets are up. No port scan.",
+        },
+        Profile {
+            name: "Regular scan",
+            command: "nmap",
+            description: "Nmap defaults (top 1000 TCP ports).",
         },
         Profile {
             name: "Intense scan plus UDP",
@@ -30,29 +50,9 @@ pub fn builtin_profiles() -> &'static [Profile] {
             description: "Intense scan without host discovery.",
         },
         Profile {
-            name: "Ping scan",
-            command: "nmap -sn",
-            description: "Discover which targets are up. No port scan.",
-        },
-        Profile {
-            name: "Quick scan",
-            command: "nmap -T4 -F",
-            description: "Aggressive timing, top 100 ports.",
-        },
-        Profile {
-            name: "Quick scan plus",
-            command: "nmap -sV -T4 -O -F --version-light",
-            description: "Quick scan plus OS and light version detection.",
-        },
-        Profile {
             name: "Quick traceroute",
             command: "nmap -sn --traceroute",
             description: "Traceroute without a port scan.",
-        },
-        Profile {
-            name: "Regular scan",
-            command: "nmap",
-            description: "Nmap defaults (top 1000 TCP ports).",
         },
         Profile {
             name: "Slow comprehensive scan",

@@ -83,3 +83,56 @@ pub fn write_meta(dir: &Path, entry: &HistoryEntry) -> anyhow::Result<()> {
     std::fs::write(dir.join("meta.toml"), s)?;
     Ok(())
 }
+
+/// Delete only a direct scan directory owned by this application's scan root.
+pub fn delete_scan(scans: &Path, dir: &Path) -> anyhow::Result<()> {
+    let root = scans.canonicalize().context("resolve scan root")?;
+    let parent = dir
+        .parent()
+        .context("scan directory has no parent")?
+        .canonicalize()
+        .context("resolve scan parent")?;
+    anyhow::ensure!(
+        parent == root,
+        "refusing to delete a directory outside the scan root"
+    );
+    match std::fs::symlink_metadata(dir) {
+        Ok(meta) => {
+            anyhow::ensure!(
+                meta.is_dir() && !meta.file_type().is_symlink(),
+                "scan path is not an owned directory"
+            );
+            let resolved = dir.canonicalize()?;
+            anyhow::ensure!(
+                resolved.parent() == Some(root.as_path()),
+                "scan path escapes the scan root"
+            );
+            std::fs::remove_dir_all(dir).context("delete scan directory")
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
+#[cfg(test)]
+mod deletion_tests {
+    #[test]
+    fn deletion_rejects_external_paths_and_symlinks() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("scans");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        assert!(super::delete_scan(&root, &outside).is_err());
+        let link = root.join("link");
+        std::os::unix::fs::symlink(&outside, &link).unwrap();
+        assert!(super::delete_scan(&root, &link).is_err());
+        assert!(super::delete_scan(&root, &root).is_err());
+        let owned = root.join("owned");
+        std::fs::create_dir(&owned).unwrap();
+        super::delete_scan(&root, &owned).unwrap();
+        assert!(!owned.exists());
+        assert!(outside.exists());
+        super::delete_scan(&root, &owned).unwrap();
+    }
+}

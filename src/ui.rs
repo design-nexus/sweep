@@ -8,38 +8,52 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Gauge, Paragraph, Tabs, Wrap};
+use ratatui::widgets::{Block, Clear, Gauge, ListItem, Paragraph, Wrap};
 
 pub fn draw(frame: &mut Frame, app: &App) {
+    app.navigation.begin(frame.area());
     let area = frame.area();
     frame.render_widget(Block::default().style(theme::bg()), area);
 
-    if area.width < 30 || area.height < 10 {
+    if area.width < 30 || area.height < 14 {
         frame.render_widget(
-            Paragraph::new("sweep · needs 30×10\nResize terminal; q quits"),
+            Paragraph::new("sweep · needs 30×14\nResize terminal; q quits"),
             area,
         );
         return;
     }
+    let chrome = chrome();
+    let area = chrome.shell(frame, area);
+    let header_h = crate::aurora::title_height(area.height) + 3;
+    let command_h = if area.width >= 80 { 3 } else { 4 };
+    let footer_h = if area.height >= 26 { 4 } else { 3 };
     let chunks = Layout::vertical([
-        Constraint::Length(3),
-        Constraint::Min(8),
-        Constraint::Length(if area.width < 100 { 5 } else { 4 }),
-        Constraint::Length(2),
+        Constraint::Length(header_h),
+        Constraint::Min(1),
+        Constraint::Length(command_h),
+        Constraint::Length(footer_h),
     ])
     .split(area);
 
     draw_header(frame, app, chunks[0]);
+    let body_block = Block::default().padding(ratatui::widgets::Padding::new(
+        2,
+        2,
+        u16::from(chunks[1].height >= 8),
+        0,
+    ));
+    let body = body_block.inner(chunks[1]);
     match app.tab {
-        Tab::Scan => draw_scan(frame, app, chunks[1]),
-        Tab::Live => draw_live(frame, app, chunks[1]),
-        Tab::Results => draw_results(frame, app, chunks[1]),
-        Tab::History => draw_history(frame, app, chunks[1]),
-        Tab::Scripts => draw_scripts(frame, app, chunks[1]),
-        Tab::Compare => draw_compare(frame, app, chunks[1]),
+        Tab::Scan => draw_scan(frame, app, body),
+        Tab::Live => draw_live(frame, app, body),
+        Tab::Results => draw_results(frame, app, body),
+        Tab::History => draw_history(frame, app, body),
+        Tab::Scripts => draw_scripts(frame, app, body),
+        Tab::Compare => draw_compare(frame, app, body),
     }
     draw_command(frame, app, chunks[2]);
-    draw_status(frame, app, chunks[3]);
+    let footer = chrome.footer(frame, chunks[3]);
+    draw_status(frame, app, footer);
 
     if app.filtering {
         draw_prompt(frame, area, "filter", &app.edit.value, app.edit.cursor);
@@ -99,19 +113,44 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         Modal::Message { title, body } => draw_confirm(frame, area, title, body),
     }
+    if matches!(
+        app.modal,
+        Modal::ConfirmRun | Modal::ConfirmQuit | Modal::ConfirmDelete
+    ) {
+        let popup = centered(area, area.width.saturating_sub(10).min(80), 10);
+        app.navigation
+            .dialog_buttons(frame, popup, app.navigation_skin());
+    }
     app.commands.draw(
         frame,
-        crate::app::ACTIONS,
+        &app.command_actions(),
         theme::bg_color(),
         theme::fg(),
         theme::purple(),
-        theme::current(),
+        theme::selected().bg.unwrap_or(theme::current()),
     );
+    app.draw_navigation(frame);
+}
+
+fn chrome() -> crate::aurora::Chrome {
+    crate::aurora::Chrome {
+        base: theme::bg(),
+        muted: theme::muted(),
+        accent: theme::title(),
+        data: theme::ip(),
+        border: Style::default().fg(theme::comment()),
+        deep: Style::default().bg(theme::deep()).fg(theme::fg()),
+    }
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
-    let [identity, tabs] =
-        Layout::vertical([Constraint::Length(1), Constraint::Length(2)]).areas(area);
+    let [identity, tabs] = Layout::vertical([
+        Constraint::Length(crate::aurora::title_height(
+            frame.area().height.saturating_sub(2),
+        )),
+        Constraint::Min(1),
+    ])
+    .areas(area);
     let state = if app.live.as_ref().is_some_and(|l| l.running()) {
         "● running"
     } else if app.nmap.present() {
@@ -119,62 +158,60 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         "○ nmap offline"
     };
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(" sweep", theme::title()),
-            Span::styled("  Network discovery / Nmap  ", theme::muted()),
-            Span::styled(state, theme::ok()),
-        ])),
+    chrome().title(
+        frame,
         identity,
+        "sweep",
+        "Network discovery / Nmap",
+        state,
+        if state.contains("offline") {
+            theme::err()
+        } else {
+            theme::ok()
+        },
     );
-    let all = Tab::all();
-    let selected = all.iter().position(|t| *t == app.tab).unwrap_or(0);
-    let start = if area.width < 80 {
-        selected.saturating_sub(1)
-    } else {
-        0
-    };
-    let count = if area.width < 80 { 4 } else { 6 };
-    let titles: Vec<Line> = all
-        .iter()
-        .skip(start)
-        .take(count)
-        .map(|t| Line::from(t.title()))
-        .collect();
-    frame.render_widget(
-        Tabs::new(titles)
-            .select(selected - start)
-            .highlight_style(theme::accent())
-            .divider("  "),
-        tabs,
-    );
+    app.navigation_bar(frame, tabs);
 }
 
 fn draw_command(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .style(Style::default().bg(theme::current()).fg(theme::fg()))
+        .padding(ratatui::widgets::Padding::new(2, 2, 1, 0));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
     let cmd = app.spec.preview_command();
-    let p = Paragraph::new(Line::from(vec![
-        Span::styled(" ", Style::default()),
-        Span::styled(cmd, theme::ip()),
-    ]))
-    .block(
-        Block::bordered()
-            .border_style(Style::default().fg(theme::comment()))
-            .title(Span::styled(" command ", theme::muted())),
-    )
-    .wrap(Wrap { trim: true });
-    frame.render_widget(p, area);
+    if inner.width >= 75 {
+        let [label, command] =
+            Layout::horizontal([Constraint::Length(10), Constraint::Min(0)]).areas(inner);
+        frame.render_widget(Paragraph::new("COMMAND").style(theme::muted()), label);
+        frame.render_widget(
+            Paragraph::new(cmd)
+                .style(theme::ip())
+                .wrap(Wrap { trim: false }),
+            command,
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled("COMMAND", theme::muted())),
+                Line::from(Span::styled(cmd, theme::ip())),
+            ])
+            .wrap(Wrap { trim: false }),
+            inner,
+        );
+    }
 }
-
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let [keys, status] =
         Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(area);
     frame.render_widget(
-        Paragraph::new(if app.tab == Tab::Scan {
-            " ^G review/run  Tab pane  ^K actions  q quit"
-        } else {
-            " Tab pane  / filter  ^K actions  q quit"
-        })
-        .style(theme::muted()),
+        Paragraph::new(crate::navigation::shortcuts(
+            &app.footer_hints(),
+            keys.width,
+            theme::title(),
+            theme::muted(),
+        ))
+        .style(chrome().deep),
         keys,
     );
     let area = status;
@@ -193,12 +230,8 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         state,
         Span::styled(format!(" {} ", app.status), theme::muted()),
         root,
-        Span::styled(
-            "  ^G review/run  Tab pane  ^K actions  q quit",
-            theme::muted(),
-        ),
     ]);
-    frame.render_widget(Paragraph::new(line).style(theme::bg()), area);
+    frame.render_widget(Paragraph::new(line).style(chrome().deep), area);
 }
 
 fn draw_scan(frame: &mut Frame, app: &App, area: Rect) {
@@ -209,70 +242,140 @@ fn draw_scan(frame: &mut Frame, app: &App, area: Rect) {
             ScanPane::Options => [Rect::default(), Rect::default(), area],
         }
     } else {
-        let [profiles, content] = Layout::horizontal([
-            Constraint::Length(if area.width >= 100 { 30 } else { 25 }),
+        let [profiles, _gutter, content] = Layout::horizontal([
+            Constraint::Length(if area.width >= 100 { 32 } else { 24 }),
+            Constraint::Length(3),
             Constraint::Min(1),
         ])
         .areas(area);
-        let [targets, options] =
-            Layout::vertical([Constraint::Length(6), Constraint::Min(1)]).areas(content);
+        let [targets, _gap, options] = Layout::vertical([
+            Constraint::Length(if area.height >= 15 { 7 } else { 5 }),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
+        .areas(content);
         [profiles, targets, options]
     };
-
-    let mut prof_lines = Vec::new();
-    for (i, p) in builtin_profiles().iter().enumerate() {
-        let sel = i == app.profile_idx;
-        let mark = if sel { "▸ " } else { "  " };
-        let style = if sel && app.scan_pane == ScanPane::Profiles {
-            theme::selected()
-        } else if sel {
-            theme::accent()
-        } else {
-            theme::bg()
-        };
-        prof_lines.push(Line::from(Span::styled(format!("{mark}{}", p.name), style)));
+    for (i, rect) in cols.iter().enumerate() {
+        app.navigation.pane(*rect, i);
     }
-    let desc = builtin_profiles()[app.profile_idx].description;
-    prof_lines.push(Line::from(""));
-    prof_lines.push(Line::from(Span::styled(desc, theme::muted())));
-    frame.render_widget(
-        Paragraph::new(prof_lines)
-            .scroll((
-                window_start(app.profile_idx, cols[0].height.saturating_sub(4) as usize) as u16,
-                0,
-            ))
-            .block(pane(" profiles ", app.scan_pane == ScanPane::Profiles)),
-        cols[0],
-    );
-
-    let dirty = if app.profile_dirty { " (edited)" } else { "" };
-    let target_title = format!(" targets{dirty} ");
-    let targets = if app.spec.targets.is_empty() {
-        Line::from(Span::styled(
-            "Enter to set hosts / CIDR / ranges",
-            theme::muted(),
-        ))
-    } else {
-        Line::from(Span::styled(&app.spec.targets, theme::ip()))
-    };
-    frame.render_widget(
-        Paragraph::new(vec![
-            targets,
-            Line::from(""),
+    if !cols[0].is_empty() {
+        let border = Style::default().fg(if app.scan_pane == ScanPane::Profiles {
+            theme::purple()
+        } else {
+            theme::comment()
+        });
+        let sidebar = crate::aurora::sidebar(frame, cols[0], border);
+        let heading_h = sidebar.height.min(if sidebar.height >= 8 { 2 } else { 1 });
+        let description_h = if sidebar.height >= 12 { 3 } else { 0 };
+        let gap_h = u16::from(sidebar.height >= 12);
+        let list_h = sidebar
+            .height
+            .saturating_sub(heading_h + description_h + gap_h)
+            .max(1);
+        let profiles = builtin_profiles();
+        let row_h = if list_h as usize >= profiles.len() * 2 {
+            2
+        } else {
+            1
+        };
+        let visible = (list_h / row_h).max(1).min(profiles.len() as u16) as usize;
+        let [heading, list, _gap, description, _space] = Layout::vertical([
+            Constraint::Length(heading_h),
+            Constraint::Length(list_h),
+            Constraint::Length(gap_h),
+            Constraint::Length(description_h),
+            Constraint::Min(0),
+        ])
+        .areas(sidebar);
+        frame.render_widget(
+            Paragraph::new("Scan profiles").style(theme::title()),
+            heading,
+        );
+        let start = window_start(app.profile_idx, visible);
+        app.navigation.rows(list, 0, start, row_h, visible);
+        let mut items = Vec::new();
+        for (i, profile) in profiles.iter().enumerate().skip(start).take(visible) {
+            let style = if i == app.profile_idx {
+                theme::selected()
+            } else {
+                theme::bg()
+            };
+            let line = Line::from(Span::styled(
+                format!(
+                    "{}{}",
+                    if i == app.profile_idx { "▸ " } else { "  " },
+                    profile.name
+                ),
+                style,
+            ));
+            items.push(ratatui::widgets::ListItem::new(if row_h == 2 {
+                vec![line, Line::from("")]
+            } else {
+                vec![line]
+            }));
+        }
+        let mut state = ratatui::widgets::ListState::default();
+        state.select(Some(app.profile_idx.saturating_sub(start)));
+        frame.render_stateful_widget(
+            ratatui::widgets::List::new(items).highlight_style(theme::selected()),
+            list,
+            &mut state,
+        );
+        frame.render_widget(
+            Paragraph::new(profiles[app.profile_idx].description)
+                .style(theme::muted())
+                .wrap(Wrap { trim: false }),
+            description,
+        );
+    }
+    if !cols[1].is_empty() {
+        let target_area = cols[1];
+        let block = Block::bordered()
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(if app.scan_pane == ScanPane::Targets {
+                theme::purple()
+            } else {
+                theme::comment()
+            }))
+            .padding(ratatui::widgets::Padding::horizontal(1));
+        let inner = block.inner(target_area);
+        frame.render_widget(block, target_area);
+        app.navigation
+            .hit(inner, crate::navigation::Intent::Row(1, 0));
+        let mut lines = vec![
             Line::from(Span::styled(
-                "space/comma/newline separated",
-                theme::muted(),
+                format!(
+                    "Targets{}",
+                    if app.profile_dirty { " · edited" } else { "" }
+                ),
+                theme::title(),
             )),
             Line::from(Span::styled(
+                if app.spec.targets.is_empty() {
+                    "Enter to set hosts / CIDR / ranges"
+                } else {
+                    &app.spec.targets
+                },
+                theme::ip(),
+            )),
+        ];
+        if inner.height >= 4 {
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "Hosts, CIDR blocks, or address ranges",
+                theme::muted(),
+            )));
+            lines.push(Line::from(Span::styled(
                 format!("profile: {}", app.profile_label()),
                 theme::script(),
-            )),
-        ])
-        .block(pane(&target_title, app.scan_pane == ScanPane::Targets))
-        .wrap(Wrap { trim: false }),
-        cols[1],
-    );
-
+            )));
+        }
+        if inner.height < 2 {
+            lines.remove(0);
+        }
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+    }
     draw_options(frame, app, cols[2]);
 }
 
@@ -303,35 +406,52 @@ fn draw_options(frame: &mut Frame, app: &App, area: Rect) {
             ("OS detection", toggle(spec.os_detection).into()),
             ("Privileges", privileges.into()),
         ];
-        let mut lines: Vec<Line> = rows
-            .into_iter()
-            .map(|(label, value)| {
-                Line::from(vec![
-                    Span::styled(format!("{label:<20}"), theme::muted()),
-                    Span::styled(value, theme::ip()),
-                ])
-            })
-            .collect();
+        let mut lines = vec![
+            Line::from(Span::styled("Scan options", theme::title())),
+            Line::from(""),
+        ];
+        for (label, value) in rows {
+            let pad = (area.width as usize)
+                .saturating_sub(label.len() + value.len())
+                .max(2);
+            let style = if label == "Privileges" && !spec.needs_root() {
+                theme::ok()
+            } else if value == "off" {
+                theme::muted()
+            } else {
+                theme::ip()
+            };
+            lines.push(Line::from(vec![
+                Span::styled(format!("{label}{}", " ".repeat(pad)), theme::muted()),
+                Span::styled(value, style),
+            ]));
+        }
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Tab to options to edit all scan settings.",
-            theme::muted(),
-        )));
-        lines.push(Line::from(Span::styled(
-            "Review the generated command before launching.",
-            theme::muted(),
-        )));
-        frame.render_widget(
-            Paragraph::new(lines)
-                .wrap(Wrap { trim: false })
-                .block(pane(" Scan options ", false)),
-            area,
-        );
+        lines.push(Line::from(vec![
+            Span::styled("(F6)", theme::title()),
+            Span::styled(
+                " edits settings · review command before launch",
+                theme::muted(),
+            ),
+        ]));
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), area);
         return;
     }
     let inner_h = area.height.saturating_sub(2) as usize;
     let sel = app.option_idx;
     let start = if sel >= inner_h { sel + 1 - inner_h } else { 0 };
+    app.navigation.rows(
+        Rect::new(
+            area.x,
+            area.y + 1,
+            area.width,
+            area.height.saturating_sub(2),
+        ),
+        2,
+        start,
+        1,
+        ROWS.len().saturating_sub(start),
+    );
     let mut lines = Vec::new();
     for (i, row) in ROWS.iter().enumerate().skip(start) {
         if lines.len() >= inner_h {
@@ -366,7 +486,17 @@ fn draw_options(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_live(frame: &mut Frame, app: &App, area: Rect) {
-    let cols = Layout::horizontal([Constraint::Min(50), Constraint::Length(36)]).split(area);
+    let cols = if area.width < 80 {
+        if app.focused_pane() == 0 {
+            [area, Rect::default()]
+        } else {
+            [Rect::default(), area]
+        }
+    } else {
+        Layout::horizontal([Constraint::Min(1), Constraint::Length(36)]).areas(area)
+    };
+    app.navigation.pane(cols[0], 0);
+    app.navigation.pane(cols[1], 1);
     let rows = Layout::vertical([Constraint::Length(3), Constraint::Min(5)]).split(cols[0]);
 
     let (label, ratio) = if let Some(f) = &app.results.finished {
@@ -413,7 +543,7 @@ fn draw_live(frame: &mut Frame, app: &App, area: Rect) {
     let scroll = if app.log_follow { 0 } else { app.log_scroll };
     frame.render_widget(
         Paragraph::new(log)
-            .block(pane(" nmap output ", true))
+            .block(pane(" nmap output ", app.focused_pane() == 0))
             .scroll((scroll, 0))
             .wrap(Wrap { trim: false }),
         rows[1],
@@ -430,7 +560,21 @@ fn draw_live(frame: &mut Frame, app: &App, area: Rect) {
     if app.results.hosts.is_empty() {
         hosts.push(Line::from(Span::styled("waiting…", theme::muted())));
     }
-    frame.render_widget(Paragraph::new(hosts).block(pane(" hosts ", false)), cols[1]);
+    frame.render_widget(
+        Paragraph::new(hosts).block(pane(" hosts ", app.focused_pane() == 1)),
+        cols[1],
+    );
+    app.navigation.text_rows(
+        frame,
+        cols[1],
+        1,
+        &app.results
+            .hosts
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (i, h.primary_ip().to_string()))
+            .collect::<Vec<_>>(),
+    );
 }
 
 fn colorize_log(s: &str) -> Line<'static> {
@@ -449,7 +593,17 @@ fn colorize_log(s: &str) -> Line<'static> {
 }
 
 fn draw_results(frame: &mut Frame, app: &App, area: Rect) {
-    let cols = Layout::horizontal([Constraint::Length(34), Constraint::Min(40)]).split(area);
+    let cols = if area.width < 80 {
+        if app.focused_pane() == 0 {
+            [area, Rect::default()]
+        } else {
+            [Rect::default(), area]
+        }
+    } else {
+        Layout::horizontal([Constraint::Length(34), Constraint::Min(1)]).areas(area)
+    };
+    app.navigation.pane(cols[0], 0);
+    app.navigation.pane(cols[1], 1);
     let hosts = app.filtered_hosts();
     let mut lines = Vec::new();
     for (i, h) in hosts.iter().enumerate() {
@@ -474,10 +628,22 @@ fn draw_results(frame: &mut Frame, app: &App, area: Rect) {
             theme::muted(),
         )));
     }
-    frame.render_widget(
-        Paragraph::new(lines).block(pane(&format!(" hosts {}  / filter ", hosts.len()), true)),
-        cols[0],
-    );
+    if !cols[0].is_empty() {
+        let block = pane(" Hosts · (Enter) inspect ", app.focused_pane() == 0);
+        let inner = block.inner(cols[0]);
+        frame.render_widget(block, cols[0]);
+        app.navigation.list(
+            frame,
+            inner,
+            0,
+            lines
+                .into_iter()
+                .map(ratatui::widgets::ListItem::new)
+                .collect(),
+            app.host_idx,
+            app.navigation_skin(),
+        );
+    }
 
     let right = Layout::vertical([Constraint::Length(1), Constraint::Min(3)]).split(cols[1]);
     let panes = ["Ports", "Scripts", "OS / traceroute", "Raw XML"];
@@ -502,6 +668,25 @@ fn draw_results(frame: &mut Frame, app: &App, area: Rect) {
             .collect::<Vec<_>>(),
     );
     frame.render_widget(Paragraph::new(tabline), right[0]);
+    let mut x = right[0].x;
+    for label in panes {
+        let width = (unicode_width::UnicodeWidthStr::width(label) + 3) as u16;
+        app.navigation.hit(
+            Rect::new(
+                x,
+                right[0].y,
+                width.min(right[0].right().saturating_sub(x)),
+                1,
+            ),
+            crate::navigation::Intent::Command(match label {
+                "Ports" => "Result ports",
+                "Scripts" => "Result scripts",
+                "OS / traceroute" => "Result OS",
+                _ => "Result XML",
+            }),
+        );
+        x = x.saturating_add(width);
+    }
 
     match app.result_pane {
         ResultPane::Ports => {
@@ -532,10 +717,22 @@ fn draw_results(frame: &mut Frame, app: &App, area: Rect) {
                     theme::muted(),
                 )));
             }
-            frame.render_widget(
-                Paragraph::new(rows)
-                    .block(pane(" ports  [ ] pane  o closed  e/m/c export ", false)),
-                right[1],
+            let block = pane(
+                " Ports · (o) closed · (e/m/c) export ",
+                app.focused_pane() == 1,
+            );
+            let inner = block.inner(right[1]);
+            frame.render_widget(block, right[1]);
+            let [heading, list] =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(inner);
+            frame.render_widget(Paragraph::new(rows.remove(0)), heading);
+            app.navigation.list(
+                frame,
+                list,
+                1,
+                rows.into_iter().map(ListItem::new).collect(),
+                app.port_idx,
+                app.navigation_skin(),
             );
         }
         ResultPane::Scripts => {
@@ -563,7 +760,9 @@ fn draw_results(frame: &mut Frame, app: &App, area: Rect) {
                 lines.push(Line::from(Span::styled("no script output", theme::muted())));
             }
             frame.render_widget(
-                Paragraph::new(lines).block(pane(" scripts ", false)),
+                Paragraph::new(lines)
+                    .scroll((app.navigation.scroll[app.navigation_screen()], 0))
+                    .block(pane(" scripts ", app.focused_pane() == 1)),
                 right[1],
             );
         }
@@ -612,7 +811,9 @@ fn draw_results(frame: &mut Frame, app: &App, area: Rect) {
                 lines.push(Line::from(Span::styled("no host selected", theme::muted())));
             }
             frame.render_widget(
-                Paragraph::new(lines).block(pane(" os / traceroute ", false)),
+                Paragraph::new(lines)
+                    .scroll((app.navigation.scroll[app.navigation_screen()], 0))
+                    .block(pane(" os / traceroute ", app.focused_pane() == 1)),
                 right[1],
             );
         }
@@ -623,11 +824,15 @@ fn draw_results(frame: &mut Frame, app: &App, area: Rect) {
                 .unwrap_or("no host");
             frame.render_widget(
                 Paragraph::new(raw)
+                    .scroll((app.navigation.scroll[app.navigation_screen()], 0))
                     .wrap(Wrap { trim: false })
-                    .block(pane(" raw xml ", false)),
+                    .block(pane(" raw xml ", app.focused_pane() == 1)),
                 right[1],
             );
         }
+    }
+    if app.result_pane != ResultPane::Ports {
+        app.navigation.details(right[1], 1);
     }
 }
 
@@ -664,11 +869,43 @@ fn draw_history(frame: &mut Frame, app: &App, area: Rect) {
             theme::muted(),
         )));
     }
-    frame.render_widget(Paragraph::new(lines).block(pane(" history ", true)), area);
+    let block = pane(" History · (Enter) open · (i) import ", true);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let [header, list] =
+        Layout::vertical([Constraint::Length(1.min(inner.height)), Constraint::Min(0)])
+            .areas(inner);
+    let heading = if lines.is_empty() {
+        Line::from("")
+    } else {
+        lines.remove(0)
+    };
+    frame.render_widget(Paragraph::new(heading), header);
+    app.navigation.list(
+        frame,
+        list,
+        0,
+        lines
+            .into_iter()
+            .map(ratatui::widgets::ListItem::new)
+            .collect(),
+        app.history_idx,
+        app.navigation_skin(),
+    );
 }
 
 fn draw_scripts(frame: &mut Frame, app: &App, area: Rect) {
-    let cols = Layout::horizontal([Constraint::Length(22), Constraint::Min(40)]).split(area);
+    let cols = if area.width < 80 {
+        if app.focused_pane() == 0 {
+            [area, Rect::default()]
+        } else {
+            [Rect::default(), area]
+        }
+    } else {
+        Layout::horizontal([Constraint::Length(22), Constraint::Min(1)]).areas(area)
+    };
+    app.navigation.pane(cols[0], 0);
+    app.navigation.pane(cols[1], 1);
     let mut cats = vec![Line::from(Span::styled(
         if app.script_cat == 0 {
             "▸ all"
@@ -693,7 +930,7 @@ fn draw_scripts(frame: &mut Frame, app: &App, area: Rect) {
         )));
     }
     frame.render_widget(
-        Paragraph::new(cats).block(pane(" category  h/l ", false)),
+        Paragraph::new(cats).block(pane(" Categories ", app.focused_pane() == 0)),
         cols[0],
     );
 
@@ -741,16 +978,45 @@ fn draw_scripts(frame: &mut Frame, app: &App, area: Rect) {
     } else {
         format!(" NSE {}/{}  space toggle  / filter ", sel + 1, list.len())
     };
-    frame.render_widget(Paragraph::new(lines).block(pane(&title, true)), cols[1]);
+    frame.render_widget(
+        Paragraph::new(lines).block(pane(&title, app.focused_pane() == 1)),
+        cols[1],
+    );
+    app.navigation.rows(
+        cols[0].inner(ratatui::layout::Margin::new(1, 1)),
+        0,
+        0,
+        1,
+        CATEGORIES.len() + 1,
+    );
+    app.navigation.text_rows(
+        frame,
+        cols[1],
+        1,
+        &app.filtered_scripts()
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (i, s.name.clone()))
+            .collect::<Vec<_>>(),
+    );
 }
 
 fn draw_compare(frame: &mut Frame, app: &App, area: Rect) {
-    let cols = Layout::horizontal([
-        Constraint::Percentage(30),
-        Constraint::Percentage(30),
-        Constraint::Percentage(40),
-    ])
-    .split(area);
+    let cols = if area.width < 80 {
+        let mut panes = [Rect::default(); 3];
+        panes[app.focused_pane().min(2)] = area;
+        panes
+    } else {
+        Layout::horizontal([
+            Constraint::Percentage(30),
+            Constraint::Percentage(30),
+            Constraint::Percentage(40),
+        ])
+        .areas(area)
+    };
+    for (i, rect) in cols.iter().enumerate() {
+        app.navigation.pane(*rect, i);
+    }
     draw_compare_side(frame, app, cols[0], 0, app.compare_left, " A (older) ");
     draw_compare_side(frame, app, cols[1], 1, app.compare_right, " B (newer) ");
     let mut lines = Vec::new();
@@ -763,7 +1029,12 @@ fn draw_compare(frame: &mut Frame, app: &App, area: Rect) {
         };
         lines.push(Line::from(Span::styled(d.text, style)));
     }
-    frame.render_widget(Paragraph::new(lines).block(pane(" diff ", false)), cols[2]);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .scroll((app.navigation.scroll[app.navigation_screen()], 0))
+            .block(pane(" diff ", app.focused_pane() == 2)),
+        cols[2],
+    );
 }
 
 fn draw_compare_side(
@@ -793,9 +1064,19 @@ fn draw_compare_side(
     if lines.is_empty() {
         lines.push(Line::from(Span::styled("no history", theme::muted())));
     }
-    frame.render_widget(
-        Paragraph::new(lines).block(pane(title, app.compare_focus == focus)),
-        area,
+    let block = pane(title, app.focused_pane() == focus as usize);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    app.navigation.list(
+        frame,
+        inner,
+        focus as usize,
+        lines
+            .into_iter()
+            .map(ratatui::widgets::ListItem::new)
+            .collect(),
+        selected.unwrap_or(0),
+        app.navigation_skin(),
     );
 }
 
@@ -868,6 +1149,7 @@ fn draw_prompt(frame: &mut Frame, area: Rect, title: &str, value: &str, cursor: 
 
 fn pane(title: &str, active: bool) -> Block<'_> {
     Block::bordered()
+        .border_type(ratatui::widgets::BorderType::Rounded)
         .title(Span::styled(
             title,
             if active {
@@ -927,7 +1209,7 @@ fn truncate(s: &str, n: usize) -> String {
 const HELP: &str = r#"Sweep — Aurora Nmap frontend
 
 Tabs          1 Scan  2 Live  3 Results  4 History  5 Scripts  6 Compare
-Tab/S-Tab     cycle panes          ? this help          q quit
+Tab/S-Tab     screens    F6/S-F6 panes    F2 Navigate          ? this help          q quit
 
 Scan builder
   j/k         move          space/enter toggle or edit
@@ -935,7 +1217,7 @@ Scan builder
   Ctrl-G      run (confirm) extra args are split, never passed to a shell
 
 Live
-  j/k scroll log    G follow tail    Ctrl-C SIGINT (then SIGKILL after 3s)
+  j/k scroll log    G follow tail    Ctrl-X cancel (then SIGKILL after 3s)
 
 Results
   h/l hosts    j/k ports    [ ] detail pane
@@ -1008,6 +1290,171 @@ mod aurora_audit {
         app.scan_pane = ScanPane::Profiles;
         app
     }
+
+    #[tokio::test]
+    async fn security_themes_keep_every_screen_and_pane_navigable() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = fixture(dir.path());
+        for id in ["crimson", "aurora"] {
+            let action = app
+                .command_actions()
+                .into_iter()
+                .find(|a| {
+                    a.label
+                        == if id == "crimson" {
+                            "Crimson theme"
+                        } else {
+                            "Aurora theme"
+                        }
+                })
+                .expect("theme action");
+            assert_eq!(action.target, crate::navigation::Intent::Theme(id));
+            app.dispatch_intent(action.target);
+            let screens = app
+                .navigation_entries()
+                .iter()
+                .filter(|e| matches!(e.target, crate::navigation::Intent::Screen(_)))
+                .count();
+            for screen in 0..screens {
+                app.select_screen(screen);
+                for pane in 0..app.pane_names().len() {
+                    app.focus_pane(pane);
+                    for &(w, h) in &crate::audit::SIZES[..4] {
+                        let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                        terminal.draw(|f| draw(f, &app)).unwrap();
+                        let buffer = terminal.backend().buffer();
+                        assert!(crate::audit::text(buffer).contains("(F2)"));
+                        crate::audit::verify_footer(buffer);
+                        crate::audit::capture(
+                            "sweep",
+                            &format!("{id}-screen{screen}-pane{pane}"),
+                            buffer,
+                        );
+                    }
+                }
+            }
+        }
+    }
+    #[tokio::test]
+    async fn common_navigation_contract_preserves_focus_and_drafts() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = fixture(dir.path());
+        app.focus_pane(0);
+        if app.navigation_editing() {
+            let _ = app.handle_key(key(KeyCode::Esc));
+        }
+        let screen = app.navigation_screen();
+        let pane = app.focused_pane();
+        let _ = app.handle_key(key(KeyCode::Tab));
+        assert_eq!(
+            app.navigation_screen(),
+            crate::navigation::step(
+                screen,
+                app.navigation_entries()
+                    .iter()
+                    .filter(|e| matches!(e.target, crate::navigation::Intent::Screen(_)))
+                    .count(),
+                1
+            )
+        );
+        if app.navigation_editing() {
+            let _ = app.handle_key(key(KeyCode::Esc));
+        }
+        let _ = app.handle_key(key(KeyCode::BackTab));
+        assert_eq!(app.navigation_screen(), screen);
+        let _ = app.handle_key(key(KeyCode::F(6)));
+        assert_eq!(
+            app.focused_pane(),
+            crate::navigation::step(pane, app.pane_names().len(), 1)
+        );
+        let _ = app.handle_key(KeyEvent::new(KeyCode::F(6), KeyModifiers::SHIFT));
+        assert_eq!(app.focused_pane(), pane);
+        let _ = app.handle_key(key(KeyCode::F(2)));
+        assert!(app.navigation.open);
+        let _ = app.handle_key(key(KeyCode::Char('1')));
+        assert!(!app.navigation.open);
+        assert_eq!(app.navigation_screen(), 0);
+        app.select_screen(screen);
+        let _ = app.handle_key(key(KeyCode::F(2)));
+        assert!(app.navigation.open);
+
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        assert!(crate::audit::text(terminal.backend().buffer()).contains("Navigate"));
+        let _ = app.handle_key(key(KeyCode::Esc));
+        assert!(!app.navigation.open);
+        terminal.draw(|f| draw(f, &app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let mut hit = None;
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width.saturating_sub(3) {
+                if buffer[(x, y)].symbol() == "("
+                    && buffer[(x + 1, y)].symbol() == "F"
+                    && buffer[(x + 2, y)].symbol() == "2"
+                {
+                    hit = Some((x, y));
+                    break;
+                }
+            }
+            if hit.is_some() {
+                break;
+            }
+        }
+        let (x, y) = hit.expect("visible clickable navigation");
+        app.navigation_mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        });
+        assert!(app.navigation.open);
+        let _ = app.handle_key(key(KeyCode::Esc));
+
+        let _ = app.handle_key(commands());
+        assert!(app.commands.open);
+        let _ = app.handle_key(key(KeyCode::Esc));
+    }
+    #[tokio::test]
+    async fn all_screens_and_focus_targets_fit_the_navigation_matrix() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = fixture(dir.path());
+        let screens = app
+            .navigation_entries()
+            .iter()
+            .filter(|e| matches!(e.target, crate::navigation::Intent::Screen(_)))
+            .count();
+        for screen in 0..screens {
+            app.select_screen(screen);
+            for pane in 0..app.pane_names().len() {
+                app.focus_pane(pane);
+                for &(w, h) in &crate::audit::SIZES[..4] {
+                    let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
+                    terminal.draw(|f| draw(f, &app)).unwrap();
+                    let buffer = terminal.backend().buffer();
+                    assert!(
+                        crate::audit::text(buffer).contains("(F2)"),
+                        "screen {screen} pane {pane} must expose navigation at {w}x{h}"
+                    );
+                    crate::audit::verify_footer(buffer);
+                    crate::audit::capture(
+                        "sweep",
+                        &format!("navigation-screen{screen}-pane{pane}"),
+                        buffer,
+                    );
+                    let before = app.navigation_screen();
+                    app.navigation_mouse(crossterm::event::MouseEvent {
+                        kind: crossterm::event::MouseEventKind::Down(
+                            crossterm::event::MouseButton::Left,
+                        ),
+                        column: w + 1,
+                        row: h + 1,
+                        modifiers: KeyModifiers::NONE,
+                    });
+                    assert_eq!(app.navigation_screen(), before);
+                }
+            }
+        }
+    }
     #[test]
     fn scan_preview_is_visible_and_edit_owns_commands() {
         let dir = tempfile::tempdir().unwrap();
@@ -1022,6 +1469,67 @@ mod aurora_audit {
         app.handle_key(commands());
         assert!(!app.commands.open);
         assert!(app.pending_start.is_none());
+    }
+    #[test]
+    #[ignore = "interactive mock fixture for visual QA"]
+    fn live_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = fixture(dir.path());
+        if let Ok(id) = std::env::var("TUI_PREVIEW_THEME") {
+            crate::theme::set(&id);
+        }
+        match std::env::var("AURORA_NAV_PREVIEW").as_deref() {
+            Ok("confirm") => {
+                app.modal = Modal::ConfirmRun;
+            }
+            Ok("menu") => app.navigation.toggle(),
+            Ok("actions") => app.commands.open = true,
+            Ok("focused") => app.focus_pane(1),
+            _ => {}
+        }
+        crate::audit::live_preview(
+            &mut app,
+            |f, a| draw(f, a),
+            |a, k| {
+                if matches!(
+                    k.code,
+                    KeyCode::F(2)
+                        | KeyCode::F(6)
+                        | KeyCode::Tab
+                        | KeyCode::BackTab
+                        | KeyCode::Down
+                        | KeyCode::Up
+                        | KeyCode::Esc
+                        | KeyCode::Char('1'..='9')
+                ) {
+                    a.handle_key(k);
+                }
+            },
+        );
+    }
+    #[test]
+    fn profiles_use_available_height_and_keep_selection_visible() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = fixture(dir.path());
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| draw(f, &app)).unwrap();
+        let text = crate::audit::text(term.backend().buffer());
+        for profile in builtin_profiles() {
+            assert!(
+                text.contains(profile.name),
+                "missing profile {}",
+                profile.name
+            );
+        }
+        app.profile_idx = builtin_profiles().len() - 1;
+        for (w, h) in [(100, 30), (80, 24), (60, 20)] {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| draw(f, &app)).unwrap();
+            assert!(
+                crate::audit::text(term.backend().buffer()).contains("▸ Slow comprehensive"),
+                "selected profile disappeared at {w}x{h}"
+            );
+        }
     }
     #[test]
     fn responsive_render_matrix() {
@@ -1045,9 +1553,16 @@ mod aurora_audit {
             let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
             term.draw(|f| draw(f, &app)).unwrap();
             let buffer = term.backend().buffer();
-            if w >= 30 && h >= 10 {
-                assert!(crate::audit::text(buffer).contains("sweep"));
+            if w >= 30 && h >= 14 {
+                assert!(
+                    buffer
+                        .content
+                        .iter()
+                        .any(|cell| matches!(cell.symbol(), "█" | "▀" | "▄")
+                            && cell.fg == crate::theme::pink())
+                );
             }
+            crate::audit::verify_footer(buffer);
             crate::audit::capture("sweep", "main", buffer);
         }
         app.scan_pane = ScanPane::Options;
@@ -1072,6 +1587,7 @@ mod aurora_audit {
             for &(w, h) in &crate::audit::SIZES[..4] {
                 let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
                 term.draw(|f| draw(f, &app)).unwrap();
+                crate::audit::verify_footer(term.backend().buffer());
                 crate::audit::capture("sweep", "offline", term.backend().buffer());
             }
         }

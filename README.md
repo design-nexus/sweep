@@ -1,8 +1,8 @@
 # Sweep
 
-Aurora terminal frontend for [Nmap](https://nmap.org). Build scans with Zenmap-style profiles and every major option group, watch live output, browse hosts/ports/scripts, and keep history on disk.
+Terminal frontend for [Nmap](https://nmap.org). Build scans with Zenmap-style profiles and every major option group, watch live output, browse hosts/ports/scripts, and keep history on disk.
 
-![Sweep scan builder](docs/screenshot.png)
+![Sweep scan builder — Crimson theme](docs/screenshot.png)
 
 This wraps the real `nmap` binary. It does not reimplement scanning.
 
@@ -42,10 +42,12 @@ Only scan networks you own or have permission to test.
 | Key | Action |
 |---|---|
 | `1`–`6` | Scan / Live / Results / History / Scripts / Compare |
-| `Tab` | Cycle panes |
+| `Tab` / `Shift+Tab` | Next / previous screen |
+| `F6` / `Shift+F6` | Next / previous pane |
+| `F2` | Search screens and panes |
 | `Ctrl-G` | Run (confirm) |
 | `y` | Copy constructed command |
-| `Ctrl-C` | SIGINT nmap (SIGKILL after 3s) |
+| `Ctrl-X` | Cancel nmap (SIGKILL after 3s) |
 | `/` | Filter |
 | `?` | Help |
 | `q` | Quit |
@@ -73,8 +75,14 @@ Aurora is the default palette. `Ctrl+K` offers Aurora, Follow Omarchy, and Termi
 
 Zenmap defaults: Intense scan, Intense plus UDP, all TCP ports, no ping, Ping scan, Quick scan, Quick scan plus, Quick traceroute, Regular scan, Slow comprehensive scan.
 
-## Aurora interface
+## Interface and themes
 
-New installations use Aurora: charcoal surfaces, lavender focus, cyan data, quiet borders, and compact headers. Existing explicit theme choices and legacy config/data locations are retained. `Ctrl+K` searches actions; Esc closes the palette. Actions use the same confirmations as their keyboard shortcuts. Tab changes focus where panes are available. Details scroll with Page Up / Page Down. Narrow layouts show the active pane; the minimum terminal is 30×10.
+New installations use Crimson: near-black surfaces, crimson focus and shortcuts, steel-gray text, cyan data, and distinct status colors. Aurora remains available through Ctrl+K actions. Existing explicit theme choices and legacy config/data locations are retained. `Ctrl+K` searches actions; Esc closes the palette. Actions use the same confirmations as their keyboard shortcuts. Tab / Shift+Tab changes screens; F6 / Shift+F6 changes panes. F2 opens Navigation. Details scroll with Page Up / Page Down. Narrow layouts show the active pane; the minimum terminal is 30×14.
 
 Build requirements: Rust 1.88 or newer, Ratatui 0.30.2, Crossterm 0.29. Run `cargo test --locked` before `./install.sh`. The command is `sweep`; no compatibility command aliases are installed.
+
+See [shared navigation](docs/navigation.md) for keyboard and mouse controls.
+
+Screenshots show actual Foot renders with sample data. The security tools default to Crimson; select **Aurora theme** in Ctrl+K actions to restore the previous palette.
+
+See [Crimson theme](docs/themes.md) for selection and verification details.

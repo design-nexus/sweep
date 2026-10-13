@@ -72,6 +72,7 @@ impl TcpScan {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ScanSpec {
+    pub resume: Option<String>,
     pub targets: String,
     pub input_list: Option<String>,
     pub exclude: Option<String>,
@@ -173,11 +174,14 @@ impl ScanSpec {
     }
 
     pub fn has_targets(&self) -> bool {
-        !self.target_list().is_empty() || self.input_list.is_some() || self.random_targets.is_some()
+        self.resume.is_some()
+            || !self.target_list().is_empty()
+            || self.input_list.is_some()
+            || self.random_targets.is_some()
     }
 
     pub fn needs_root(&self) -> bool {
-        if self.unprivileged || self.tcp_scan == TcpScan::Connect {
+        if self.unprivileged {
             return false;
         }
         self.tcp_scan != TcpScan::Default && self.tcp_scan != TcpScan::Connect
@@ -197,6 +201,9 @@ impl ScanSpec {
 
     /// Flags and targets, without output (`-oX` etc.) which the runner owns.
     pub fn to_argv(&self) -> Vec<String> {
+        if let Some(path) = &self.resume {
+            return vec!["--resume".into(), path.clone()];
+        }
         let mut a = Vec::new();
         push_flag(&mut a, self.list_scan, "-sL");
         push_flag(&mut a, self.ping_scan, "-sn");
@@ -493,6 +500,10 @@ impl ScanSpec {
                         spec.random_targets = take_val(args, &mut i).and_then(|s| s.parse().ok());
                         continue;
                     }
+                    if arg == "--resume" {
+                        spec.resume = take_val(args, &mut i);
+                        continue;
+                    }
                     // skip runner-owned output flags
                     if matches!(arg, "-oX" | "-oN" | "-oG" | "-oA" | "-oS" | "--stats-every") {
                         let _ = take_val(args, &mut i);
@@ -547,6 +558,7 @@ impl ScanSpec {
     }
 
     pub fn toggle_bool(&mut self, id: &str) {
+        self.resume = None;
         let set = |v: &mut bool| *v = !*v;
         match id {
             "list_scan" => set(&mut self.list_scan),
@@ -637,6 +649,7 @@ impl ScanSpec {
     }
 
     pub fn set_text(&mut self, id: &str, v: String) {
+        self.resume = None;
         let opt = |v: String| {
             let t = v.trim();
             if t.is_empty() {
@@ -699,12 +712,14 @@ impl ScanSpec {
     }
 
     pub fn cycle_tcp_scan(&mut self) {
+        self.resume = None;
         let all = TcpScan::all();
         let i = all.iter().position(|t| *t == self.tcp_scan).unwrap_or(0);
         self.tcp_scan = all[(i + 1) % all.len()];
     }
 
     pub fn cycle_dns(&mut self) {
+        self.resume = None;
         self.dns = match self.dns {
             DnsMode::Default => DnsMode::Never,
             DnsMode::Never => DnsMode::Always,
@@ -838,6 +853,24 @@ mod tests {
         assert_eq!(spec, back, "preview was {}", spec.preview_command());
     }
 
+    #[test]
+    fn resume_is_a_standalone_command_and_retains_privilege_requirements() {
+        let mut spec = ScanSpec::default();
+        spec.os_detection = true;
+        spec.tcp_scan = TcpScan::Connect;
+        assert!(spec.needs_root());
+        spec.os_detection = false;
+        assert!(!spec.needs_root());
+        spec.resume = Some("/tmp/a scan/scan.nmap".into());
+        assert!(spec.has_targets());
+        assert_eq!(spec.to_argv(), vec!["--resume", "/tmp/a scan/scan.nmap"]);
+        let parsed = ScanSpec::from_argv(&[
+            "nmap".into(),
+            "--resume".into(),
+            "/tmp/a scan/scan.nmap".into(),
+        ]);
+        assert_eq!(parsed.resume, spec.resume);
+    }
     #[test]
     fn default_is_bare_nmap() {
         let spec = ScanSpec {

@@ -70,24 +70,52 @@ pub async fn start(
         .binary()
         .ok_or_else(|| anyhow::anyhow!("nmap is not installed or not on PATH"))?;
 
-    let id = Uuid::new_v4().to_string()[..8].to_string();
+    let previous = if let Some(path) = &spec.resume {
+        let path = Path::new(path);
+        if !path.is_file() {
+            bail!("resume output does not exist: {}", path.display());
+        }
+        let parent = path.parent().context("resume output directory")?;
+        std::fs::read_to_string(parent.join("meta.toml"))
+            .ok()
+            .and_then(|s| toml::from_str::<crate::persist::HistoryEntry>(&s).ok())
+    } else {
+        None
+    };
+    let id = previous
+        .as_ref()
+        .map(|e| e.id.clone())
+        .unwrap_or_else(|| Uuid::new_v4().to_string()[..8].to_string());
     let stamp = Utc::now().format("%Y%m%dT%H%M%S");
-    let dir = scans_root.join(format!("{stamp}-{id}"));
+    let dir = if let Some(path) = &spec.resume {
+        Path::new(path)
+            .parent()
+            .context("resume directory")?
+            .to_path_buf()
+    } else {
+        scans_root.join(format!("{stamp}-{id}"))
+    };
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let base = dir.join("scan");
-    let xml_path = dir.join("scan.xml");
-
+    let xml_path = if let Some(path) = &spec.resume {
+        Path::new(path).with_extension("xml")
+    } else {
+        dir.join("scan.xml")
+    };
     let mut nmap_args = spec.to_argv();
-    // Runner-owned output. Insert before targets so nmap still sees flags first.
-    let targets = spec.target_list();
-    if !targets.is_empty() {
-        nmap_args.truncate(nmap_args.len() - targets.len());
+    if spec.resume.is_none() {
+        let targets = spec.target_list();
+        if !targets.is_empty() {
+            nmap_args.truncate(nmap_args.len() - targets.len());
+        }
+        nmap_args.extend([
+            "--stats-every".into(),
+            "1s".into(),
+            "-oA".into(),
+            base.to_string_lossy().into_owned(),
+        ]);
+        nmap_args.extend(targets);
     }
-    nmap_args.push("--stats-every".into());
-    nmap_args.push("1s".into());
-    nmap_args.push("-oA".into());
-    nmap_args.push(base.to_string_lossy().into_owned());
-    nmap_args.extend(targets);
 
     let used_sudo = escalate && spec.needs_root() && !info.euid_root;
     let mut cmd = if used_sudo {
@@ -148,9 +176,15 @@ pub async fn start(
         xml_path,
         pid,
         child: Some(child),
-        argv: nmap_args,
+        argv: previous
+            .as_ref()
+            .map(|e| e.argv.clone())
+            .unwrap_or(nmap_args),
         display_cmd,
-        started: Utc::now(),
+        started: previous
+            .as_ref()
+            .map(|e| e.started)
+            .unwrap_or_else(Utc::now),
         log: Vec::new(),
         stats_line: String::new(),
         cancel_requested: false,
@@ -179,6 +213,58 @@ mod tests {
     use crate::nmap::xml::parse_partial;
     use std::os::unix::fs::PermissionsExt;
 
+    #[tokio::test]
+    async fn resume_reuses_output_and_passes_only_resume_arguments() {
+        let dir = tempfile::tempdir().unwrap();
+        let scans = dir.path().join("a scan");
+        std::fs::create_dir(&scans).unwrap();
+        let output = scans.join("scan.nmap");
+        std::fs::write(&output, "interrupted").unwrap();
+        let args = dir.path().join("args");
+        let fake = dir.path().join("fake-nmap");
+        std::fs::write(
+            &fake,
+            format!("#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\n", args.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let original = crate::persist::HistoryEntry {
+            id: "old-scan".into(),
+            started: Utc::now(),
+            finished: None,
+            argv: vec!["-sT".into(), "192.0.2.1".into()],
+            targets: "192.0.2.1".into(),
+            profile: None,
+            dir: scans.clone(),
+            status: "interrupted".into(),
+            hosts_up: 0,
+            hosts_total: 0,
+            command: "nmap -sT 192.0.2.1".into(),
+        };
+        crate::persist::write_meta(&scans, &original).unwrap();
+        let info = NmapInfo {
+            path: Some(fake),
+            version: None,
+            euid_root: true,
+        };
+        let spec = ScanSpec {
+            resume: Some(output.to_string_lossy().into()),
+            targets: original.targets.clone(),
+            ..Default::default()
+        };
+        let (mut live, _) = start(&spec, &info, &dir.path().join("unused"), false)
+            .await
+            .unwrap();
+        assert!(live.child.as_mut().unwrap().wait().await.unwrap().success());
+        assert_eq!(
+            std::fs::read_to_string(args).unwrap(),
+            format!("--resume\n{}\n", output.display())
+        );
+        assert_eq!(live.dir, scans);
+        assert_eq!(live.xml_path, scans.join("scan.xml"));
+        assert_eq!(live.id, "old-scan");
+        assert_eq!(live.argv, original.argv);
+    }
     #[tokio::test]
     async fn mock_binary_produces_host() {
         let tmp = std::env::temp_dir().join(format!("sweep-test-{}", Uuid::new_v4()));

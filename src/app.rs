@@ -98,6 +98,7 @@ pub enum Modal {
 }
 
 pub struct App {
+    pub navigation: crate::navigation::State,
     pub commands: crate::commands::Palette,
     pub tab: Tab,
     pub spec: ScanSpec,
@@ -157,10 +158,11 @@ impl App {
             "nmap not on PATH — XML viewing works; install nmap to scan".into()
         };
         let mut app = Self {
+            navigation: crate::navigation::State::default(),
             commands: crate::commands::Palette::default(),
             tab: Tab::Scan,
             spec: ScanSpec::default(),
-            profile_idx: 5, // Quick scan
+            profile_idx: 0, // Quick scan
             profile_dirty: false,
             nmap,
             paths,
@@ -262,20 +264,15 @@ impl App {
             return;
         }
 
+        if self.navigation_key(key) {
+            return;
+        }
         if self.commands.open
             || (key.code == KeyCode::Char('k') && key.modifiers.contains(KeyModifiers::CONTROL))
         {
-            if let Some(action) = self.commands.handle(key, ACTIONS) {
-                if action.modifiers == KeyModifiers::ALT {
-                    let id = match action.key {
-                        KeyCode::Char('o') => "omarchy",
-                        KeyCode::Char('t') => "terminal",
-                        _ => "aurora",
-                    };
-                    self.apply_aurora_theme(id);
-                } else {
-                    self.handle_key(action.event());
-                }
+            let actions = self.command_actions();
+            if let Some(action) = self.commands.handle(key, &actions) {
+                self.dispatch_intent(action.target);
             }
             return;
         }
@@ -288,15 +285,11 @@ impl App {
                 }
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if let Some(live) = self.live.as_mut() {
-                    if live.running() {
-                        live.request_cancel();
-                        self.status =
-                            "SIGINT sent to nmap (resume from History if incomplete)".into();
-                        return;
-                    }
+                if self.live.as_ref().is_some_and(|l| l.running()) {
+                    self.modal = Modal::ConfirmQuit;
+                } else {
+                    self.should_quit = true;
                 }
-                self.should_quit = true;
             }
             KeyCode::Char('?') => self.modal = Modal::Help,
             KeyCode::Char(c @ '1'..='6') => {
@@ -304,8 +297,8 @@ impl App {
                     self.tab = t;
                 }
             }
-            KeyCode::Tab => self.cycle_pane(1),
-            KeyCode::BackTab => self.cycle_pane(-1),
+            KeyCode::F(6) => {}
+
             KeyCode::Char('g') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.prompt_run();
             }
@@ -327,19 +320,6 @@ impl App {
                 Tab::Scripts => self.handle_scripts_key(key),
                 Tab::Compare => self.handle_compare_key(key),
             },
-        }
-    }
-
-    fn cycle_pane(&mut self, dir: isize) {
-        if self.tab == Tab::Scan {
-            self.scan_pane = match (self.scan_pane, dir) {
-                (ScanPane::Profiles, 1) | (ScanPane::Options, -1) => ScanPane::Targets,
-                (ScanPane::Targets, 1) | (ScanPane::Profiles, -1) => ScanPane::Options,
-                (ScanPane::Options, 1) | (ScanPane::Targets, -1) => ScanPane::Profiles,
-                _ => self.scan_pane,
-            };
-        } else if self.tab == Tab::Results {
-            self.result_pane = self.result_pane.next();
         }
     }
 
@@ -548,6 +528,40 @@ impl App {
     }
 
     fn handle_results_key(&mut self, key: KeyEvent) {
+        if self.focused_pane() == 0
+            && matches!(
+                key.code,
+                KeyCode::Down | KeyCode::Up | KeyCode::Char('j' | 'k')
+            )
+        {
+            self.navigation_scroll(
+                0,
+                if matches!(key.code, KeyCode::Down | KeyCode::Char('j')) {
+                    1
+                } else {
+                    -1
+                },
+            );
+            return;
+        }
+        if key.code == KeyCode::Enter && self.focused_pane() == 0 {
+            self.focus_pane(1);
+            return;
+        }
+        if self.focused_pane() == 1 && matches!(key.code, KeyCode::Left | KeyCode::Right) {
+            let i = match self.result_pane {
+                ResultPane::Ports => 0,
+                ResultPane::Scripts => 1,
+                ResultPane::Os => 2,
+                ResultPane::Raw => 3,
+            };
+            self.navigation_selector(crate::navigation::step(
+                i,
+                4,
+                if key.code == KeyCode::Right { 1 } else { -1 },
+            ));
+            return;
+        }
         match key.code {
             KeyCode::Char('h') | KeyCode::Left => {
                 if self.host_idx > 0 {
@@ -672,9 +686,24 @@ impl App {
     }
 
     fn handle_compare_key(&mut self, key: KeyEvent) {
+        if self.compare_focus == 2 {
+            if matches!(
+                key.code,
+                KeyCode::Down | KeyCode::Up | KeyCode::Char('j' | 'k')
+            ) {
+                self.navigation_scroll(
+                    2,
+                    if matches!(key.code, KeyCode::Down | KeyCode::Char('j')) {
+                        1
+                    } else {
+                        -1
+                    },
+                );
+            }
+            return;
+        }
         let n = self.history.entries.len();
         match key.code {
-            KeyCode::Tab => self.compare_focus = (self.compare_focus + 1) % 2,
             KeyCode::Down | KeyCode::Char('j') => {
                 if n == 0 {
                     return;
@@ -884,13 +913,19 @@ impl App {
         if self.history_idx >= self.history.entries.len() {
             return;
         }
-        let e = self.history.entries.remove(self.history_idx);
-        let _ = std::fs::remove_dir_all(&e.dir);
+        let e = self.history.entries[self.history_idx].clone();
+        if let Err(error) = persist::delete_scan(&self.paths.scans, &e.dir) {
+            self.status = format!("delete failed: {error:#}");
+            return;
+        }
+        self.history.entries.remove(self.history_idx);
         if self.history_idx >= self.history.entries.len() {
             self.history_idx = self.history.entries.len().saturating_sub(1);
         }
-        let _ = persist::save_history(&self.paths.history, &self.history);
-        self.status = format!("deleted {}", e.id);
+        self.status = match persist::save_history(&self.paths.history, &self.history) {
+            Ok(()) => format!("deleted {}", e.id),
+            Err(error) => format!("deleted files, but saving history failed: {error:#}"),
+        };
     }
 
     fn rerun_history(&mut self) {
@@ -913,10 +948,16 @@ impl App {
                 self.status = "scan already complete".into();
                 return;
             }
-            let xml = e.dir.join("scan.xml");
-            self.spec = ScanSpec::default();
-            self.spec.extra = format!("--resume {}", xml.display());
-            self.spec.targets.clear();
+            let output = e.dir.join("scan.nmap");
+            if !output.is_file() {
+                self.status = "cannot resume: saved scan.nmap is missing".into();
+                return;
+            }
+            let mut argv = vec!["nmap".into()];
+            argv.extend(e.argv.clone());
+            self.spec = ScanSpec::from_argv(&argv);
+            self.spec.targets = e.targets.clone();
+            self.spec.resume = Some(output.to_string_lossy().into_owned());
             self.profile_dirty = true;
             self.prompt_run();
         }
@@ -1098,7 +1139,10 @@ pub const ACTIONS: &[crate::commands::Action] = &[
     crate::commands::Action::key("Copy command", 'y'),
     crate::commands::Action::key("Filter", '/'),
     crate::commands::Action::key("Help", '?'),
+    crate::commands::Action::theme("Crimson theme", 'c'),
     crate::commands::Action::theme("Aurora theme", 'a'),
     crate::commands::Action::theme("Follow Omarchy theme", 'o'),
     crate::commands::Action::theme("Terminal theme", 't'),
 ];
+
+include!("navigation_impl.rs");

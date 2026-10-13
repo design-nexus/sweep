@@ -1,10 +1,12 @@
 mod app;
 #[cfg(test)]
 mod audit;
+mod aurora;
 mod commands;
 mod export;
 mod fields;
 mod input;
+mod navigation;
 mod nmap;
 mod persist;
 mod theme;
@@ -25,6 +27,9 @@ use std::time::Duration;
     after_help = "Pass nmap arguments after -- to load them into the builder:\n  sweep -- nmap -sV scanme.nmap.org"
 )]
 struct Cli {
+    /// Disable terminal mouse capture
+    #[arg(long)]
+    no_mouse: bool,
     /// Open an nmap XML file
     xml: Option<PathBuf>,
     /// Target host, CIDR, or range
@@ -45,7 +50,17 @@ async fn main() -> anyhow::Result<()> {
     app.apply_cli(cli.target, cli.profile, cli.xml, cli.nmap)?;
 
     let mut terminal = ratatui::init();
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
+        previous(info);
+    }));
+
+    if !cli.no_mouse {
+        crossterm::execute!(std::io::stdout(), crossterm::event::EnableMouseCapture)?;
+    }
     let result = run(&mut terminal, &mut app).await;
+    let _ = crossterm::execute!(std::io::stdout(), crossterm::event::DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -55,7 +70,8 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::
     let mut ticks = tokio::time::interval(Duration::from_millis(200));
     ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
-        terminal.draw(|f| ui::draw(f, app))?;
+        let rendered = terminal.draw(|f| ui::draw(f, app))?;
+        aurora::paint_wordmark(rendered.buffer)?;
         if app.should_quit {
             break;
         }
@@ -68,6 +84,7 @@ async fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> anyhow::
                     Some(Ok(Event::Key(key))) if key.kind == KeyEventKind::Press => {
                         app.handle_key(key);
                     }
+                    Some(Ok(Event::Mouse(mouse)))=>app.navigation_mouse(mouse),
                     Some(Ok(Event::Resize(_, _))) => {}
                     Some(Err(e)) => anyhow::bail!(e),
                     None => break,
